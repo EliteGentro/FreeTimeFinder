@@ -63,7 +63,7 @@ export default function App() {
               {darkMode ? "🌞 Light Mode" : "🌙 Dark Mode"}
             </button>
             <a
-              href="https://www.youtube.com/watch?v=F6jDsWlSsEc"
+              href="https://youtu.be/Ck3KbiHxB7w"
               target="_blank"
               rel="noopener noreferrer"
               className="px-4 py-2 rounded-3xl bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600"
