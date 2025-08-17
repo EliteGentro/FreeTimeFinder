@@ -1,4 +1,4 @@
-export const extractScheduleEntries = (text) => {
+export const extractScheduleEntriesIris = (text) => {
     const dayAbbr = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 
     // Normalize whitespace to single spaces for easier regex matching
@@ -77,6 +77,115 @@ export const extractScheduleEntries = (text) => {
 
     // Capture returned arrays from both sections
     const classEntries = parseBlocks(bloquesText);
-    console.log(classEntries.join("\n"));
+    return classEntries.join("\n");
+}
+
+export const extractScheduleEntriesMitec = (text) => {
+    const dayAbbr = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sa", "Do"];
+
+    // Normalize whitespace to single spaces for easier regex matching
+    const normalized = text.replace(/\s+/g, " ");
+
+    // Find bloques section boundaries
+    const classesStart = normalized.indexOf("Unidades de Formación");
+    if (classesStart === -1) return ""; // No relevant section found
+
+    let classesEnd = normalized.length;
+
+    const bloquesText = normalized.slice(classesStart, classesEnd).trim();
+
+    function adjustTimeRange(rangeStr) {
+        const [start, end] = rangeStr.split(" - ");
+
+        function adjust(timeStr, minutesDiff) {
+            const [h, m] = timeStr.split(":").map(Number);
+            const date = new Date(0, 0, 0, h, m); // dummy date
+            date.setMinutes(date.getMinutes() + minutesDiff);
+            return date.toTimeString().slice(0, 5); // HH:MM 24h format
+        }
+
+        const newStart = adjust(start, -10); // subtract 10 min
+        const newEnd = adjust(end, +10);    // add 10 min
+
+        return `${newStart} - ${newEnd}`;
+    }
+
+    function parseBlocks(sectionText) {
+        const entries = [];
+        const dateRangePattern = String.raw`\d{2}-\d{2}-\d{4}\s*al\s*\d{2}-\d{2}-\d{4}`;
+
+        const blockRegex = new RegExp(
+        `(${dateRangePattern})([\\s\\S]*?)(?=${dateRangePattern}|$)`,
+        "g"
+        );
+        
+        // Split by "Dates:"
+        const blocks = [...sectionText.matchAll(blockRegex)].map(m => m[1] + m[2] + " ".trim());
+
+        for (const block of blocks) {
+            const trimmedBlock = block.trim();
+            if(trimmedBlock.indexOf("No Aplica") >= 0) continue; //Classes without schedule
+            // Extract course code: first token after Unidad de formación:
+            const courseCodeMatch = trimmedBlock.match(/[A-Z]+[0-9]+[A-Z]*\.[0-9]{3}/);
+            if (!courseCodeMatch) continue;
+            const courseCode = courseCodeMatch[0].split('.')[0];
+            
+
+            // Find the date range: DD.MM.YYYY - DD.MM.YYYY
+            const dateRangeMatch = trimmedBlock.match(dateRangePattern);
+            if (!dateRangeMatch) continue;
+
+            const startDate = dateRangeMatch[0].split("al")[0].trim().replaceAll("-",".");
+            const endDate = dateRangeMatch[0].split("al")[1].trim().replaceAll("-",".");
+
+            // Find where the time of the class ends
+            const idxTimeEnd = trimmedBlock.indexOf('hrs');
+
+            // Substring after course code and before time end
+            const idxCourseCodeEnd = trimmedBlock.indexOf(courseCode) + courseCode.length + 4;
+            let betweenText = trimmedBlock.slice(idxCourseCodeEnd, idxTimeEnd).trim();
+
+
+            let earliestIndex = -1;
+
+            for (const day of dayAbbr) {
+                // Replace all dashes with spaces
+                const changedText = betweenText.replace(/-/g, " ");
+                // Match the day as a separate word
+                const regex = new RegExp(`\\b${day}\\b`, "g");
+                const match = regex.exec(changedText);
+                if (match) {
+                    const idx = match.index;
+                    if (earliestIndex === -1 || idx < earliestIndex) {
+                        earliestIndex = idx;
+                    }
+                }
+            }
+            if (earliestIndex === -1) continue; // no valid day abbreviation found
+
+            const dayTimeSection = betweenText.slice(earliestIndex);
+
+            // Regex to find all day/time entries, e.g. "Lu-Ma 09:00 a 11:00"
+            const pattern = `(?:${dayAbbr.join("|")})(?:[ -]+(?:${dayAbbr.join("|")}))*\\s+\\d{2}:\\d{2} a \\d{2}:\\d{2}`;
+            const dayTimeRegex = new RegExp(pattern, "g");
+
+            const dayTimeMatches = dayTimeSection.match(dayTimeRegex);
+            if (!dayTimeMatches) continue;
+
+            for (const dt of dayTimeMatches) {
+                const newDate = dt.replaceAll("-", ", ").replace(" a ", " - ");
+                const parts = newDate.match(/^([A-Za-záéíóúñ, ]+) (\d{2}:\d{2} - \d{2}:\d{2})$/);
+                if (!parts) continue;
+                const days = parts[1].replace(/\s*,\s*/g, ", ").trim();
+                const timeRange = adjustTimeRange(parts[2]); //Mitec add up to 10 minutes from start and removes 10 from end
+                entries.push(`${courseCode} | ${days} ${timeRange} | ${startDate}-${endDate}`);
+            }
+        }
+        return entries;
+    }
+
+    // Capture returned arrays from both sections
+    const classEntries = parseBlocks(bloquesText);
+
     return classEntries.join("\n");
 }

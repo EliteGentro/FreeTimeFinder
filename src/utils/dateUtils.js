@@ -8,6 +8,13 @@ export const dayMap = {
   Sáb: "Sat",
   Sab: "Sat",
   Dom: "Sun",
+  Lu: "Mon",
+  Ma: "Tue",
+  Mi: "Wed",
+  Ju: "Thu",
+  Vi: "Fri",
+  Sa: "Sat",
+  Do: "Sun",
 };
 
 export const toDateStart = (ddmmyyyy) => {

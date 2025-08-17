@@ -5,7 +5,7 @@ import Calendar from "./components/Calendar";
 import useParsedSchedule from "./hooks/useParsedSchedule";
 import useSchedulePeriods from "./hooks/useSchedulePeriods";
 import FileUpload from "./components/FileUpload";
-import { extractScheduleEntries } from "./utils/pdfConverter";
+import { extractScheduleEntriesIris, extractScheduleEntriesMitec } from "./utils/pdfConverter";
 import PeriodFreeTimes from "./components/PeriodFreeTimes";
 import Footer from "./components/Footer";
 
@@ -36,8 +36,18 @@ export default function App() {
     for (const file of files) {
       try {
         const pdfText = await extractTextFromPDF(file);
+        console.log(pdfText)
         //const llmResponse = await sendToLLM(pdfText);
-        const llmResponse = extractScheduleEntries(pdfText);
+        let llmResponse;
+        console.log(pdfText.indexOf("Mi horario"))
+        if(pdfText.indexOf("Mi horario") != 0){
+          llmResponse = extractScheduleEntriesMitec(pdfText);
+          console.log("Mitec")
+        } else{
+          llmResponse = extractScheduleEntriesIris(pdfText);
+          console.log("Iris")
+        }
+        console.log(llmResponse)
         combinedText += llmResponse + "\n";
       } catch (err) {
         console.error("Upload/parse error:", err);
