@@ -1,17 +1,75 @@
-<<<<<<< HEAD
-# FreeTimeFinder
-Free Time Finder is a web app that allows the user to find free periods by uploading their own schedule and as many friends' as desired.
-=======
-# React + Vite
+# 📅 FreeTimeFinder
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+FreeTimeFinder is a lightweight, intuitive web application that helps you **find common free periods** between you and your friends.  
+Simply upload your own schedule, add as many friends’ schedules as you like, and instantly see when everyone is available.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 🚀 Features
 
-## Expanding the ESLint configuration
+- **Multi-user support** – Upload multiple schedules and compare them side-by-side.
+- **Automatic free time detection** – Instantly compute shared free periods for all participants.
+- **Flexible uploads** – Add your schedule first, then add as many friends' schedules as you want.
+- **Period-based analysis** – Break schedules into weeks/periods for more accurate comparisons.
+- **Privacy-friendly** – Schedules are processed locally in the browser (no server storage).
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
->>>>>>> 6ebfd05 (Initial commit)
+---
+
+## 🖥️ How It Works
+
+1. Upload your own schedule file.
+2. Upload one or more friends’ schedules.
+3. The app will:
+   - Merge the schedules.
+   - Divide them into **week periods**.
+   - Compute free times per period.
+4. View the resulting shared availability on an interactive UI.
+
+---
+
+## 📂 File Format
+
+FreeTimeFinder works with schedule files in a specific PDF format.  
+A valid file should contain:
+- **Week periods** (start and end dates)
+- **Events/Classes** with:
+  - Day of week
+  - Start time
+  - End time
+  - Event name (optional)
+
+> 💡 Tip #1: If your school or service can export schedules to PDF, change the pdfConvert function.
+
+> 💡 Tip #2: You can use the vite config file and the api util to pass the pdf text to a an LLM for formatting instead of creating the funcion.
+
+---
+
+## 🛠️ Tech Stack
+
+- **Frontend:** React + Vite
+- **Styling:** TailwindCSS
+- **State Management:** React Hooks
+- **Utilities:** Custom schedule parsing & period computation functions
+
+---
+
+## 📦 Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/FreeTimeFinder.git
+cd FreeTimeFinder
+
+## 📦 Installation
+
+Install dependencies:
+
+```bash
+npm install
+```
+Run locally:
+```bash
+npm run dev
+```
+The app will be available at http://localhost:5173.
