@@ -97,15 +97,26 @@ export const extractScheduleEntriesMitec = (text) => {
     function adjustTimeRange(rangeStr) {
         const [start, end] = rangeStr.split(" - ");
 
-        function adjust(timeStr, minutesDiff) {
+        function roundToNearestHalfHour(timeStr) {
             const [h, m] = timeStr.split(":").map(Number);
-            const date = new Date(0, 0, 0, h, m); // dummy date
-            date.setMinutes(date.getMinutes() + minutesDiff);
-            return date.toTimeString().slice(0, 5); // HH:MM 24h format
+            const date = new Date(0, 0, 0, h, m);
+
+            // Round minutes to nearest 0 or 30
+            const minutes = date.getMinutes();
+            const roundedMinutes = minutes < 15 ? 0 : minutes < 45 ? 30 : 60;
+
+            if (roundedMinutes === 60) {
+            date.setHours(date.getHours() + 1);
+            date.setMinutes(0);
+            } else {
+            date.setMinutes(roundedMinutes);
+            }
+
+            return date.toTimeString().slice(0, 5); // HH:MM
         }
 
-        const newStart = adjust(start, -10); // subtract 10 min
-        const newEnd = adjust(end, +10);    // add 10 min
+        const newStart = roundToNearestHalfHour(start);
+        const newEnd = roundToNearestHalfHour(end);
 
         return `${newStart} - ${newEnd}`;
     }
