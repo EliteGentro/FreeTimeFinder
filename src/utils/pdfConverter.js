@@ -1,202 +1,345 @@
+// pdfConverter.js
+//
+// PDF-format detection + structured extraction of schedule entries from the
+// two known schedule PDF flavors (Iris and Mitec).
+//
+// Both extractors return a flat array of ScheduleEntry objects:
+//   {
+//     name,        // course code, e.g. "TC2007B"
+//     title,       // full subject name, e.g. "Integración de seguridad ..."
+//     days,        // [day]  (single day per entry, e.g. ["Mon"])
+//     startTime,   // "HH:MM"
+//     endTime,     // "HH:MM"
+//     startDate,   // "DD.MM.YYYY"
+//     endDate,     // "DD.MM.YYYY"
+//     type,        // "course" | "week"
+//     location,    // human-readable, e.g. "MTY | Aulas III | 306"
+//   }
+//
+// Entries without a valid date range, day list, or schedule time are skipped.
+
+import { dayMap } from "./dateUtils";
+
+const IRIS_DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const MITEC_DAYS = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sa", "Do"];
+
+/* ------------------------------------------------------------------ *
+ * Shared helpers                                                      *
+ * ------------------------------------------------------------------ */
+
+export const detectScheduleFormat = (text) => {
+  if (!text) return "unknown";
+  if (
+    text.includes("Mi horario") ||
+    text.includes("Bloques / Materias del plan de estudios")
+  ) {
+    return "iris";
+  }
+  if (text.includes("Unidades de Formación") || text.includes("CRN")) {
+    return "mitec";
+  }
+  return "unknown";
+};
+
+export const extractStudentName = (text) => {
+  if (!text) return null;
+  const withId = text.match(/Alumno:\s*([^\n()]+?)\s*\(([A-Z0-9]+)\)/);
+  if (withId) return withId[1].replace(/\s+/g, " ").trim();
+  const plain = text.match(/Alumno:\s*([^\n]+?)\s+Matricula:/);
+  if (plain) return plain[1].replace(/\s+/g, " ").trim();
+  const loose = text.match(
+    /Alumno:\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ' .-]{3,80})/
+  );
+  if (loose) return loose[1].replace(/\s+/g, " ").trim();
+  return null;
+};
+
+const splitLines = (block) =>
+  block.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+
+const classifyType = (code) => (code.endsWith("S") ? "week" : "course");
+
+const mapDays = (daysStr) =>
+  daysStr
+    .split(/\s*,\s*/)
+    .map((d) => dayMap[d.trim()] || d.trim())
+    .filter(Boolean);
+
+/** Mitec records report times shifted by 10 min; round to the nearest half-hour. */
+const roundToHalfHour = (timeStr) => {
+  const [h, m] = timeStr.split(":").map(Number);
+  let totalMin = h * 60 + m;
+  const r = totalMin % 30;
+  if (r === 0) {
+    // no change
+  } else if (r < 15) {
+    totalMin -= r;
+  } else {
+    totalMin += 30 - r;
+  }
+  const hh = Math.floor(totalMin / 60) % 24;
+  const mm = totalMin % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+};
+
+/* ------------------------------------------------------------------ *
+ * Iris extractor                                                      *
+ * ------------------------------------------------------------------ */
+
+const IRIS_DAYTIME_RE = new RegExp(
+  `^((?:${IRIS_DAYS.join("|")})(?:\\s*,\\s*(?:${IRIS_DAYS.join("|")}))*)\\s+(\\d{2}:\\d{2})\\s*-\\s*(\\d{2}:\\d{2})\\s*$`
+);
+const IRIS_DATE_RE = /^(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})$/;
+// e.g. "MTY | Aulas III | 306"   "NAL | Edificio Campus Nacional | CNAL"
+const IRIS_LOCATION_RE =
+  /^([A-Z]{2,5})\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*$/;
+
 export const extractScheduleEntriesIris = (text) => {
-    const dayAbbr = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+  if (!text) return [];
+  const startIdx = text.indexOf("Bloques / Materias del plan de estudios");
+  if (startIdx === -1) return [];
+  const rawSection = text.slice(startIdx);
 
-    // Normalize whitespace to single spaces for easier regex matching
-    const normalized = text.replace(/\s+/g, " ");
+  // Split into per-course blocks; first chunk before the first marker is preamble.
+  const blocks = rawSection.split(/Unidad de formación:/i).slice(1);
 
-    // Find bloques section boundaries
-    const classesStart = normalized.indexOf("Bloques / Materias del plan de estudios");
-    if (classesStart === -1) return ""; // No relevant section found
+  const out = [];
 
-    let classesEnd = normalized.length;
+  for (const rawBlock of blocks) {
+    const lines = splitLines(rawBlock);
+    if (lines.length === 0) continue;
 
-    const bloquesText = normalized.slice(classesStart, classesEnd).trim();
+    // Course code is the first non-empty token in the block (Iris places it
+    // on its own line, possibly preceded by colons / whitespace already stripped).
+    const code = lines[0].split(/\s+/)[0];
+    if (!code) continue;
 
-    function parseBlocks(sectionText) {
-        const entries = [];
-
-        // Split by "Unidad de formación:" and skip the first empty element
-        const blocks = sectionText.split("Unidad de formación:").slice(1);
-
-        for (const block of blocks) {
-            const trimmedBlock = block.trim();
-
-            // Extract course code: first token after Unidad de formación:
-            const courseCodeMatch = trimmedBlock.match(/^(\S+)/);
-            if (!courseCodeMatch) continue;
-            const courseCode = courseCodeMatch[1];
-
-            // Find the date range: DD.MM.YYYY - DD.MM.YYYY
-            const dateRangeRegex = /(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})/;
-            const dateRangeMatch = trimmedBlock.match(dateRangeRegex);
-            if (!dateRangeMatch) continue;
-
-            const startDate = dateRangeMatch[1];
-            const endDate = dateRangeMatch[2];
-
-            // Find the index where the date range starts
-            const idxDateRangeStart = dateRangeMatch.index;
-
-            // Substring after course code and before date range
-            const idxCourseCodeEnd = trimmedBlock.indexOf(courseCode) + courseCode.length;
-            let betweenText = trimmedBlock.slice(idxCourseCodeEnd, idxDateRangeStart).trim();
-
-            let earliestIndex = -1;
-            for (const day of dayAbbr) {
-                const regex = new RegExp(`\\b${day}\\b`, "g");
-                const match = regex.exec(betweenText);
-                if (match) {
-                    const idx = match.index;
-                    if (earliestIndex === -1 || idx < earliestIndex) {
-                        earliestIndex = idx;
-                    }
-                }
-            }
-            if (earliestIndex === -1) continue; // no valid day abbreviation found
-
-            const dayTimeSection = betweenText.slice(earliestIndex);
-
-            // Regex to find all day/time entries, e.g. "Lun, Mar 09:00 - 11:00"
-            const pattern = `(?:${dayAbbr.join("|")})(?:[ ,]+(?:${dayAbbr.join("|")}))*\\s+\\d{2}:\\d{2} - \\d{2}:\\d{2}`;
-            const dayTimeRegex = new RegExp(pattern, "g");
-
-            const dayTimeMatches = dayTimeSection.match(dayTimeRegex);
-            if (!dayTimeMatches) continue;
-
-            for (const dt of dayTimeMatches) {
-                const parts = dt.match(/^([A-Za-záéíóúñ, ]+) (\d{2}:\d{2} - \d{2}:\d{2})$/);
-                if (!parts) continue;
-                const days = parts[1].replace(/\s*,\s*/g, ", ").trim();
-                const timeRange = parts[2];
-                entries.push(`${courseCode} | ${days} ${timeRange} | ${startDate}-${endDate}`);
-            }
-        }
-
-        return entries;
+    // Title is the next line that is neither the code nor metadata.
+    let title = "";
+    for (let i = 1; i < lines.length; i++) {
+      const l = lines[i];
+      if (
+        IRIS_DAYTIME_RE.test(l) ||
+        IRIS_DATE_RE.test(l) ||
+        IRIS_LOCATION_RE.test(l) ||
+        /^Sub-períodos?\b/i.test(l) ||
+        /^CRN\b/i.test(l) ||
+        /^Sin horario/i.test(l)
+      ) {
+        break;
+      }
+      title = l;
+      break;
     }
 
-    // Capture returned arrays from both sections
-    const classEntries = parseBlocks(bloquesText);
-    return classEntries.join("\n");
-}
+    // Date range
+    let startDate = null;
+    let endDate = null;
+    for (const l of lines) {
+      const m = l.match(IRIS_DATE_RE);
+      if (m) {
+        startDate = m[1];
+        endDate = m[2];
+        break;
+      }
+    }
+    if (!startDate || !endDate) continue; // no schedule → skip
+
+    // Day-time lines (may be multiple, e.g. "Lun, Mié 13:00 - 17:00" + "Mar, Jue 15:00 - 17:00")
+    const dayTimeLines = lines
+      .map((l) => l.match(IRIS_DAYTIME_RE))
+      .filter(Boolean);
+    if (dayTimeLines.length === 0) continue;
+
+    // Location line (optional)
+    let location = "";
+    for (const l of lines) {
+      const m = l.match(IRIS_LOCATION_RE);
+      if (m) {
+        location = `${m[1]} | ${m[2].trim()} | ${m[3].trim()}`;
+        break;
+      }
+    }
+
+    const type = classifyType(code);
+
+    for (const m of dayTimeLines) {
+      const days = mapDays(m[1]);
+      const startTime = m[2];
+      const endTime = m[3];
+      for (const day of days) {
+        out.push({
+          name: code,
+          title,
+          days: [day],
+          startTime,
+          endTime,
+          startDate,
+          endDate,
+          type,
+          location,
+        });
+      }
+    }
+  }
+
+  return out;
+};
+
+/* ------------------------------------------------------------------ *
+ * Mitec extractor                                                     *
+ * ------------------------------------------------------------------ */
+
+const MITEC_DATE_LINE_RE = /^(\d{2})-(\d{2})-(\d{4})$/;
+const MITEC_CODE_RE = /([A-Z]+\d+[A-Z]*)\.(\d{3})/;
+const MITEC_DAY_LINE_RE = new RegExp(
+  `^(${MITEC_DAYS.join("|")})(?:-(?:${MITEC_DAYS.join("|")}))*$`
+);
+const MITEC_TIME_LINE_RE =
+  /^(\d{2}:\d{2})\s+a\s+(\d{2}:\d{2})(?:\s+hrs)?\s*$/;
+const MITEC_ROOM_RE = /^Salón\s+\S+/;
+
+/**
+ * Identifies block boundaries in the line-preserved Mitec text: each block
+ * starts at a `DD-MM-YYYY` line followed (after possibly blank lines) by
+ * `al`, and runs until the next such triplet or end of section.
+ */
+const sliceMitecBlocks = (lines) => {
+  const starts = [];
+  for (let i = 0; i < lines.length - 2; i++) {
+    if (
+      MITEC_DATE_LINE_RE.test(lines[i]) &&
+      /^al$/i.test(lines[i + 1]) &&
+      MITEC_DATE_LINE_RE.test(lines[i + 2])
+    ) {
+      starts.push(i);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < starts.length; i++) {
+    const s = starts[i];
+    const e = i + 1 < starts.length ? starts[i + 1] : lines.length;
+    out.push(lines.slice(s, e));
+  }
+  return out;
+};
+
+const dotDate = (ddmmYYYY) => ddmmYYYY.replace(/-/g, ".");
 
 export const extractScheduleEntriesMitec = (text) => {
-    const dayAbbr = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sa", "Do"];
+  if (!text) return [];
+  const startIdx = text.indexOf("Unidades de Formación");
+  if (startIdx === -1) return [];
+  const lines = splitLines(text.slice(startIdx));
 
-    // Normalize whitespace to single spaces for easier regex matching
-    const normalized = text.replace(/\s+/g, " ");
+  const blocks = sliceMitecBlocks(lines);
+  const out = [];
 
-    // Find bloques section boundaries
-    const classesStart = normalized.indexOf("Unidades de Formación");
-    if (classesStart === -1) return ""; // No relevant section found
-
-    let classesEnd = normalized.length;
-
-    const bloquesText = normalized.slice(classesStart, classesEnd).trim();
-
-    function adjustTimeRange(rangeStr) {
-        const [start, end] = rangeStr.split(" - ");
-
-        function roundToNearestHalfHour(timeStr) {
-            const [h, m] = timeStr.split(":").map(Number);
-            const date = new Date(0, 0, 0, h, m);
-
-            // Round minutes to nearest 0 or 30
-            const minutes = date.getMinutes();
-            const roundedMinutes = minutes < 15 ? 0 : minutes < 45 ? 30 : 60;
-
-            if (roundedMinutes === 60) {
-            date.setHours(date.getHours() + 1);
-            date.setMinutes(0);
-            } else {
-            date.setMinutes(roundedMinutes);
-            }
-
-            return date.toTimeString().slice(0, 5); // HH:MM
-        }
-
-        const newStart = roundToNearestHalfHour(start);
-        const newEnd = roundToNearestHalfHour(end);
-
-        return `${newStart} - ${newEnd}`;
+  for (const block of blocks) {
+    if (block.some((l) => /No Aplica/i.test(l) || /Sin horario/i.test(l))) {
+      continue;
     }
 
-    function parseBlocks(sectionText) {
-        const entries = [];
-        const dateRangePattern = String.raw`\d{2}-\d{2}-\d{4}\s*al\s*\d{2}-\d{2}-\d{4}`;
+    // Dates (lines 0 and 2 of the block by construction).
+    const startDate = dotDate(block[0]);
+    const endDate = dotDate(block[2]);
 
-        const blockRegex = new RegExp(
-        `(${dateRangePattern})([\\s\\S]*?)(?=${dateRangePattern}|$)`,
-        "g"
-        );
-        
-        // Split by "Dates:"
-        const blocks = [...sectionText.matchAll(blockRegex)].map(m => m[1] + m[2] + " ".trim());
-
-        for (const block of blocks) {
-            const trimmedBlock = block.trim();
-            if(trimmedBlock.indexOf("No Aplica") >= 0) continue; //Classes without schedule
-            // Extract course code: first token after Unidad de formación:
-            const courseCodeMatch = trimmedBlock.match(/[A-Z]+[0-9]+[A-Z]*\.[0-9]{3}/);
-            if (!courseCodeMatch) continue;
-            const courseCode = courseCodeMatch[0].split('.')[0];
-            
-
-            // Find the date range: DD.MM.YYYY - DD.MM.YYYY
-            const dateRangeMatch = trimmedBlock.match(dateRangePattern);
-            if (!dateRangeMatch) continue;
-
-            const startDate = dateRangeMatch[0].split("al")[0].trim().replaceAll("-",".");
-            const endDate = dateRangeMatch[0].split("al")[1].trim().replaceAll("-",".");
-
-            // Find where the time of the class ends
-            const idxTimeEnd = trimmedBlock.indexOf('hrs');
-
-            // Substring after course code and before time end
-            const idxCourseCodeEnd = trimmedBlock.indexOf(courseCode) + courseCode.length + 4;
-            let betweenText = trimmedBlock.slice(idxCourseCodeEnd, idxTimeEnd).trim();
-
-
-            let earliestIndex = -1;
-
-            for (const day of dayAbbr) {
-                // Replace all dashes with spaces
-                const changedText = betweenText.replace(/-/g, " ");
-                // Match the day as a separate word
-                const regex = new RegExp(`\\b${day}\\b`, "g");
-                const match = regex.exec(changedText);
-                if (match) {
-                    const idx = match.index;
-                    if (earliestIndex === -1 || idx < earliestIndex) {
-                        earliestIndex = idx;
-                    }
-                }
-            }
-            if (earliestIndex === -1) continue; // no valid day abbreviation found
-
-            const dayTimeSection = betweenText.slice(earliestIndex);
-
-            // Regex to find all day/time entries, e.g. "Lu-Ma 09:00 a 11:00"
-            const pattern = `(?:${dayAbbr.join("|")})(?:[ -]+(?:${dayAbbr.join("|")}))*\\s+\\d{2}:\\d{2} a \\d{2}:\\d{2}`;
-            const dayTimeRegex = new RegExp(pattern, "g");
-
-            const dayTimeMatches = dayTimeSection.match(dayTimeRegex);
-            if (!dayTimeMatches) continue;
-
-            for (const dt of dayTimeMatches) {
-                const newDate = dt.replaceAll("-", ", ").replace(" a ", " - ");
-                const parts = newDate.match(/^([A-Za-záéíóúñ, ]+) (\d{2}:\d{2} - \d{2}:\d{2})$/);
-                if (!parts) continue;
-                const days = parts[1].replace(/\s*,\s*/g, ", ").trim();
-                const timeRange = adjustTimeRange(parts[2]); //Mitec add up to 10 minutes from start and removes 10 from end
-                entries.push(`${courseCode} | ${days} ${timeRange} | ${startDate}-${endDate}`);
-            }
-        }
-        return entries;
+    // Locate course-code line.
+    let codeLineIdx = -1;
+    let code = null;
+    let codeLineTitleHead = "";
+    for (let i = 3; i < block.length; i++) {
+      const m = block[i].match(MITEC_CODE_RE);
+      if (m) {
+        codeLineIdx = i;
+        code = m[1];
+        codeLineTitleHead = block[i]
+          .slice(block[i].indexOf(m[0]) + m[0].length)
+          .trim();
+        break;
+      }
     }
+    if (!code || codeLineIdx === -1) continue;
 
-    // Capture returned arrays from both sections
-    const classEntries = parseBlocks(bloquesText);
+    // Title spans from the code line (after the code itself) through any
+    // subsequent lines up to the first CRN / Profesor / day line.
+    const titleParts = [];
+    if (codeLineTitleHead) titleParts.push(codeLineTitleHead);
+    for (let i = codeLineIdx + 1; i < block.length; i++) {
+      const l = block[i];
+      if (
+        /^CRN\b/i.test(l) ||
+        /^Profesor(a)?\b/i.test(l) ||
+        /^Co-Titular/i.test(l) ||
+        MITEC_DAY_LINE_RE.test(l)
+      ) {
+        break;
+      }
+      titleParts.push(l);
+    }
+    const title = titleParts.join(" ").replace(/\s+/g, " ").trim();
 
-    return classEntries.join("\n");
-}
+    // Collect (day-line, time-line) pairs.
+    const dayTimePairs = [];
+    for (let i = codeLineIdx + 1; i < block.length - 1; i++) {
+      if (MITEC_DAY_LINE_RE.test(block[i])) {
+        const t = block[i + 1].match(MITEC_TIME_LINE_RE);
+        if (t) {
+          dayTimePairs.push({
+            days: block[i].split("-"),
+            startTime: roundToHalfHour(t[1]),
+            endTime: roundToHalfHour(t[2]),
+          });
+        }
+      }
+    }
+    if (dayTimePairs.length === 0) continue;
+
+    // Location: building line (between time and Salón) + Salón line.
+    let building = "";
+    let room = "";
+    for (let i = 0; i < block.length; i++) {
+      const l = block[i];
+      if (MITEC_ROOM_RE.test(l) && !room) room = l.trim();
+    }
+    // Building is whichever non-empty line sits between any time line and the room.
+    for (let i = 0; i < block.length - 1; i++) {
+      if (MITEC_TIME_LINE_RE.test(block[i])) {
+        for (let j = i + 1; j < block.length; j++) {
+          const l = block[j];
+          if (MITEC_ROOM_RE.test(l)) break;
+          if (/^CRN\b/i.test(l) || /^Profesor/i.test(l) || /^Co-Titular/i.test(l)) {
+            continue;
+          }
+          if (l && !MITEC_DAY_LINE_RE.test(l) && !MITEC_TIME_LINE_RE.test(l)) {
+            building = l.trim();
+            break;
+          }
+        }
+        if (building) break;
+      }
+    }
+    const location = [building, room].filter(Boolean).join(" | ");
+
+    const type = classifyType(code);
+
+    for (const dt of dayTimePairs) {
+      const days = mapDays(dt.days.join(","));
+      for (const day of days) {
+        out.push({
+          name: code,
+          title,
+          days: [day],
+          startTime: dt.startTime,
+          endTime: dt.endTime,
+          startDate,
+          endDate,
+          type,
+          location,
+        });
+      }
+    }
+  }
+
+  return out;
+};

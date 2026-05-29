@@ -1,35 +1,29 @@
 import { useMemo } from "react";
-import {
-    createPeriods,
-    assignSchedulesToPeriods,
-    computeSharedFreeTimesPerPeriod,
-} from "../utils/scheduleHelpers";
+import { createPeriods, computePeriodSlotData } from "../utils/scheduleHelpers";
 
-export default function useSchedulePeriods(mainSchedule, friendsSchedules) {
-    // Memoize periods, recompute only when schedules change
-    const periods = useMemo(() => {
-        const all = [...mainSchedule, ...friendsSchedules];
-        const p = createPeriods(all);
-        return p;
-    }, [mainSchedule, friendsSchedules]);
+/**
+ * @param {Object|null} mainOwner    { id, name, entries }
+ * @param {Array}       friendOwners [{ id, name, entries }, ...]
+ */
+export default function useSchedulePeriods(mainOwner, friendOwners) {
+  const owners = useMemo(() => {
+    const list = [];
+    if (mainOwner && mainOwner.entries?.length) list.push(mainOwner);
+    for (const f of friendOwners || []) {
+      if (f && f.entries?.length) list.push(f);
+    }
+    return list;
+  }, [mainOwner, friendOwners]);
 
-    const mainPeriods = useMemo(() => {
-        const assigned = assignSchedulesToPeriods(periods, mainSchedule);
-        return assigned;
-    }, [periods, mainSchedule]);
+  const periods = useMemo(() => {
+    const all = owners.flatMap((o) => o.entries);
+    return createPeriods(all);
+  }, [owners]);
 
-    const friendPeriods = useMemo(() => {
-        const assigned = assignSchedulesToPeriods(periods, friendsSchedules);
-        return assigned;
-    }, [periods, friendsSchedules]);
+  const periodSlotData = useMemo(
+    () => computePeriodSlotData(periods, owners),
+    [periods, owners]
+  );
 
-    // Memoize computation of shared free times
-    const periodFreeTimes = useMemo(() => {
-        if (mainPeriods.length === 0) {
-            return [];
-        }
-        return computeSharedFreeTimesPerPeriod(mainPeriods, friendPeriods);
-    }, [mainPeriods, friendPeriods]);
-
-    return { periods, periodFreeTimes };
+  return { periods, periodSlotData, owners };
 }

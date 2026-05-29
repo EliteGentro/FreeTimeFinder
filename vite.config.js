@@ -4,7 +4,14 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(),tailwindcss(),],
+  plugins: [react(),tailwindcss()],
+  test: {
+    environment: "node",
+    include: ["src/**/__tests__/**/*.test.{js,jsx}"],
+  },
+  optimizeDeps: {
+    exclude: ["pdfjs-dist"],
+  },
   server: {
     proxy: {
       "/api": {

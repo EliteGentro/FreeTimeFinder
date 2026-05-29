@@ -1,8 +1,25 @@
-// periodUtils.js
+// scheduleHelpers.js
+//
+// Period / free-time computation utilities.
+//
+// Data model:
+//   ScheduleEntry  = { name, days: [day], startTime, endTime, startDate, endDate, type }
+//   Owner          = { id, name, entries: ScheduleEntry[] }
+//   Period         = { index, type, start, end, label, startDateFormatted, endDateFormatted }
+//   PeriodSlotData = {
+//     periodIndex, label, type,
+//     freeByDay: { Mon: [ { start, end, freeOwnerIds: string[] }, ... ], ... }
+//   }
+//
+// All free-time slots are produced on a fixed 30-minute grid (07:00–21:00).
 
 import { parseDate, formatDateDot, toDateStart, toDateEnd, timeToMinutes } from "./dateUtils";
 
-// Helper to add days to a Date object
+export const WORK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+export const DAY_START_MIN = timeToMinutes("07:00");
+export const DAY_END_MIN = timeToMinutes("21:00");
+export const SLOT_MIN = 30;
+
 export const addDays = (date, days) => {
   const result = new Date(date);
   result.setDate(result.getDate() + days);
@@ -10,14 +27,37 @@ export const addDays = (date, days) => {
 };
 
 /**
- * Creates exactly 5 periods:
- * Course Period 1: semester start → day before Week 1 start
- * Week Period 1: Week 1 start → Week 1 end
- * Course Period 2: day after Week 1 end → day before Week 2 start
- * Week Period 2: Week 2 start → Week 2 end
- * Course Period 3: day after Week 2 end → semester end
- *
- * Assumes exactly two unique week periods exist.
+ * Groups week-typed schedules into clusters of overlapping date ranges.
+ * Handles the case where two PDF formats encode the same logical "semana tec"
+ * with slightly different start/end dates (e.g. Mon–Fri vs Mon–Sun).
+ */
+const clusterWeeks = (weekSchedules) => {
+  const items = weekSchedules
+    .map((s) => ({ start: parseDate(s.startDate), end: parseDate(s.endDate) }))
+    .filter((x) => x.start && x.end)
+    .sort((a, b) => a.start - b.start);
+
+  const clusters = [];
+  for (const it of items) {
+    const c = clusters.find(
+      (cluster) => it.start <= cluster.end && it.end >= cluster.start
+    );
+    if (c) {
+      c.start = new Date(Math.min(c.start.getTime(), it.start.getTime()));
+      c.end = new Date(Math.max(c.end.getTime(), it.end.getTime()));
+      c.count += 1;
+    } else {
+      clusters.push({ start: it.start, end: it.end, count: 1 });
+    }
+  }
+  return clusters.sort((a, b) => a.start - b.start);
+};
+
+/**
+ * Builds the canonical sequence of academic periods.
+ * Supports 0, 1, or 2 week clusters and produces a coherent course/week
+ * alternation around them. When more than 2 week clusters appear, only the
+ * two most-populated are kept.
  */
 export const createPeriods = (allSchedules) => {
   if (!allSchedules || allSchedules.length === 0) return [];
@@ -27,229 +67,196 @@ export const createPeriods = (allSchedules) => {
   );
   if (validSchedules.length === 0) return [];
 
-  const courseSchedules = validSchedules.filter((s) => s.type === "course");
   const weekSchedules = validSchedules.filter((s) => s.type === "week");
 
-  // Semester boundaries (overall min start and max end date)
   const allStartDates = validSchedules.map((s) => parseDate(s.startDate));
   const allEndDates = validSchedules.map((s) => parseDate(s.endDate));
   const semesterStart = new Date(Math.min(...allStartDates.map((d) => d.getTime())));
   const semesterEnd = new Date(Math.max(...allEndDates.map((d) => d.getTime())));
 
-  // Unique week periods by startDate|endDate
-  const uniqueWeekMap = new Map();
-  for (const s of weekSchedules) {
-    const key = `${s.startDate}|${s.endDate}`;
-    if (!uniqueWeekMap.has(key)) uniqueWeekMap.set(key, s);
+  let clusters = clusterWeeks(weekSchedules);
+
+  // Keep at most 2 week clusters; prefer those with the highest count
+  // (i.e. seen across more uploaded schedules), tie-broken by start date.
+  if (clusters.length > 2) {
+    clusters = [...clusters]
+      .sort((a, b) => b.count - a.count || a.start - b.start)
+      .slice(0, 2)
+      .sort((a, b) => a.start - b.start);
   }
-  const uniqueWeeks = Array.from(uniqueWeekMap.values()).sort(
-    (a, b) => parseDate(a.startDate) - parseDate(b.startDate)
+
+  const periods = [];
+  let pIdx = 1;
+  let cursor = semesterStart;
+
+  const pushCourse = (start, end) => {
+    if (start > end) return;
+    periods.push({ index: pIdx++, type: "course", start, end });
+  };
+  const pushWeek = (start, end) => {
+    periods.push({ index: pIdx++, type: "week", start, end });
+  };
+
+  for (const wk of clusters) {
+    pushCourse(cursor, addDays(wk.start, -1));
+    pushWeek(wk.start, wk.end);
+    cursor = addDays(wk.end, 1);
+  }
+  pushCourse(cursor, semesterEnd);
+
+  // Assign human-friendly labels.
+  let courseN = 0;
+  let weekN = 0;
+  return periods.map((p) => {
+    if (p.type === "course") {
+      courseN += 1;
+      return {
+        ...p,
+        label: `Course Period ${courseN}`,
+        startDateFormatted: formatDateDot(p.start),
+        endDateFormatted: formatDateDot(p.end),
+      };
+    }
+    weekN += 1;
+    return {
+      ...p,
+      label: `Week Period ${weekN}`,
+      startDateFormatted: formatDateDot(p.start),
+      endDateFormatted: formatDateDot(p.end),
+    };
+  });
+};
+
+const overlapsPeriod = (entry, period) => {
+  const sStart = toDateStart(entry.startDate).getTime();
+  const sEnd = toDateEnd(entry.endDate).getTime();
+  const pStart = period.start.getTime();
+  const pEnd = period.end.getTime();
+  if (period.type !== entry.type) return false;
+  return (
+    (sStart >= pStart && sStart <= pEnd) ||
+    (sEnd >= pStart && sEnd <= pEnd) ||
+    (sStart <= pStart && sEnd >= pEnd)
   );
+};
 
-if (uniqueWeeks.length !== 2) {
-  return [];
-}
-
-  const week1Start = parseDate(uniqueWeeks[0].startDate);
-  const week1End = parseDate(uniqueWeeks[0].endDate);
-  const week2Start = parseDate(uniqueWeeks[1].startDate);
-  const week2End = parseDate(uniqueWeeks[1].endDate);
-
-  // Calculate course period boundaries with day adjustments
-  const course1End = addDays(week1Start, -1);
-  const course2Start = addDays(week1End, 1);
-  const course2End = addDays(week2Start, -1);
-  const course3Start = addDays(week2End, 1);
-
-  const periods = [
-    {
-      index: 1,
-      type: "course",
-      start: semesterStart,
-      end: course1End >= semesterStart ? course1End : semesterStart,
-      label: "Course Period 1",
-    },
-    {
-      index: 2,
-      type: "week",
-      start: week1Start,
-      end: week1End,
-      label: "Week Period 1",
-    },
-    {
-      index: 3,
-      type: "course",
-      start: course2Start <= course2End ? course2Start : course2End,
-      end: course2End >= course2Start ? course2End : course2Start,
-      label: "Course Period 2",
-    },
-    {
-      index: 4,
-      type: "week",
-      start: week2Start,
-      end: week2End,
-      label: "Week Period 2",
-    },
-    {
-      index: 5,
-      type: "course",
-      start: course3Start <= semesterEnd ? course3Start : semesterEnd,
-      end: semesterEnd,
-      label: "Course Period 3",
-    },
-  ];
-
-  return periods.map((p) => ({
-    ...p,
-    startDateFormatted: formatDateDot(p.start),
-    endDateFormatted: formatDateDot(p.end),
-  }));
+/** Merges overlapping [start, end] intervals (values in minutes). */
+export const mergeIntervals = (intervals) => {
+  if (!intervals.length) return [];
+  const sorted = [...intervals].sort((a, b) => a.start - b.start);
+  const out = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = out[out.length - 1];
+    const it = sorted[i];
+    if (it.start <= cur.end) cur.end = Math.max(cur.end, it.end);
+    else out.push({ ...it });
+  }
+  return out;
 };
 
 /**
- * Assigns schedules to the given periods by checking if the schedule's date range overlaps
- * the period date range.
- * Courses only go to course periods; weeks only to week periods.
- * Includes schedules that fully or partially overlap.
+ * Returns, for the given owner and period, a map { day: [{start,end} busy] }
+ * with merged busy intervals (in minutes-of-day) clipped to the work-day.
  */
-export const assignSchedulesToPeriods = (periods, schedules) => {
-  if (!periods || periods.length === 0) return [];
+const ownerBusyByDay = (owner, period) => {
+  const result = {};
+  for (const day of WORK_DAYS) result[day] = [];
 
-  return periods.map((p) => {
-    const entries = (schedules || []).filter((s) => {
-      const sStart = toDateStart(s.startDate).getTime();
-      const sEnd = toDateEnd(s.endDate).getTime();
-      const pStart = p.start.getTime();
-      const pEnd = p.end.getTime();
+  for (const entry of owner.entries) {
+    if (!overlapsPeriod(entry, period)) continue;
+    if (!entry.days || !entry.startTime || !entry.endTime) continue;
+    const s = timeToMinutes(entry.startTime);
+    const e = timeToMinutes(entry.endTime);
+    if (Number.isNaN(s) || Number.isNaN(e) || e <= s) continue;
+    const start = Math.max(s, DAY_START_MIN);
+    const end = Math.min(e, DAY_END_MIN);
+    if (start >= end) continue;
+    for (const day of entry.days) {
+      if (result[day]) result[day].push({ start, end });
+    }
+  }
 
-      if (p.type === "course") {
-        if (s.type !== "course") return false;
-      } else if (p.type === "week") {
-        if (s.type !== "week") return false;
-      } else {
-        return false;
+  for (const day of WORK_DAYS) {
+    result[day] = mergeIntervals(result[day]);
+  }
+  return result;
+};
+
+const isFreeAt = (busyIntervals, slotStart, slotEnd) => {
+  for (const b of busyIntervals) {
+    if (slotStart < b.end && slotEnd > b.start) return false;
+  }
+  return true;
+};
+
+/**
+ * For each period, produces a 30-minute grid of slot data:
+ *   { freeByDay: { day: [{ start, end, freeOwnerIds }, ...] } }
+ *
+ * `owners` is the list of all schedule owners (main + friends). Each slot
+ * records which owners are free, enabling both shared-mode and heat-map
+ * rendering on top of the same precomputed structure.
+ */
+export const computePeriodSlotData = (periods, owners) => {
+  if (!Array.isArray(periods) || periods.length === 0) return [];
+  if (!Array.isArray(owners) || owners.length === 0) return [];
+
+  return periods.map((period) => {
+    const ownerBusy = owners.map((o) => ({
+      id: o.id,
+      busy: ownerBusyByDay(o, period),
+    }));
+
+    const freeByDay = {};
+    for (const day of WORK_DAYS) {
+      const slots = [];
+      for (let t = DAY_START_MIN; t < DAY_END_MIN; t += SLOT_MIN) {
+        const slotEnd = t + SLOT_MIN;
+        const freeOwnerIds = [];
+        for (const ob of ownerBusy) {
+          if (isFreeAt(ob.busy[day] || [], t, slotEnd)) {
+            freeOwnerIds.push(ob.id);
+          }
+        }
+        slots.push({ start: t, end: slotEnd, freeOwnerIds });
       }
+      freeByDay[day] = slots;
+    }
 
-      // Overlapping intervals:
-      return (
-        (sStart >= pStart && sStart <= pEnd) ||
-        (sEnd >= pStart && sEnd <= pEnd) ||
-        (sStart <= pStart && sEnd >= pEnd)
-      );
-    });
-
-    return { ...p, schedules: entries };
+    return {
+      periodIndex: period.index,
+      label: period.label,
+      type: period.type,
+      freeByDay,
+    };
   });
 };
 
 /**
- * Merges overlapping intervals (in minutes).
- * Example input: [{start: 60, end: 120}, {start: 110, end: 150}]
- * Output: [{start: 60, end: 150}]
+ * From a slot grid, derives shared free-time ranges per day (slots where
+ * every owner in `selectedOwnerIds` is free), merging consecutive 30-minute
+ * slots into contiguous ranges.
  */
-export const mergeIntervals = (intervals) => {
-  if (!intervals.length) return [];
-  intervals.sort((a, b) => a.start - b.start);
-  const res = [];
-  let cur = { ...intervals[0] };
-  for (let i = 1; i < intervals.length; i++) {
-    const it = intervals[i];
-    if (it.start <= cur.end) {
-      cur.end = Math.max(cur.end, it.end);
-    } else {
-      res.push(cur);
-      cur = { ...it };
+export const sharedFreeRangesPerDay = (periodSlot, selectedOwnerIds) => {
+  const out = {};
+  const sel = selectedOwnerIds || [];
+  for (const day of WORK_DAYS) {
+    const slots = periodSlot.freeByDay[day] || [];
+    const ranges = [];
+    let current = null;
+    for (const slot of slots) {
+      const allFree =
+        sel.length > 0 && sel.every((id) => slot.freeOwnerIds.includes(id));
+      if (allFree) {
+        if (current) current.end = slot.end;
+        else current = { start: slot.start, end: slot.end };
+      } else if (current) {
+        ranges.push(current);
+        current = null;
+      }
     }
+    if (current) ranges.push(current);
+    out[day] = ranges;
   }
-  res.push(cur);
-  return res;
-};
-
-/**
- * Computes shared free times per period for main and friend schedules.
- * Workdays are Monday to Friday 07:00-21:00 by default.
- * Returns array with freeTimesByDay per period.
- */
-export const computeSharedFreeTimesPerPeriod = (mainPeriods, friendPeriods) => {
-  try {
-    if (!Array.isArray(mainPeriods) || !Array.isArray(friendPeriods)) {
-      return [];
-    }
-
-    const workDays = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-    const startOfDay = timeToMinutes("07:00");
-    const endOfDay = timeToMinutes("21:00");
-
-    const results = [];
-
-    // Build friend periods lookup by label
-    const friendPeriodMap = new Map();
-    for (const fp of friendPeriods) {
-      if (fp.label) friendPeriodMap.set(fp.label, fp);
-    }
-
-    for (const pMain of mainPeriods) {
-      if (!pMain || !pMain.label || !Array.isArray(pMain.schedules)) {
-        continue;
-      }
-      const pFriend = friendPeriodMap.get(pMain.label) || { schedules: [] };
-
-      // Defensive: check schedules arrays
-      if (!Array.isArray(pFriend.schedules)) {
-        pFriend.schedules = [];
-      }
-
-      const combined = [...pMain.schedules, ...pFriend.schedules];
-
-      const freeTimesByDay = {};
-
-      for (const day of workDays) {
-        const intervals = [];
-
-        for (const cls of combined) {
-          if (!cls.days || !cls.days.includes(day)) continue;
-          if (!cls.startTime || !cls.endTime) continue;
-
-          const s = timeToMinutes(cls.startTime);
-          const e = timeToMinutes(cls.endTime);
-
-          if (isNaN(s) || isNaN(e)) continue;
-          if (e <= s) continue;
-
-          const start = Math.max(s, startOfDay);
-          const end = Math.min(e, endOfDay);
-          if (start < end) intervals.push({ start, end });
-        }
-
-        const merged = mergeIntervals(intervals);
-
-        const frees = [];
-        let cursor = startOfDay;
-
-        for (const it of merged) {
-          if (it.start > cursor) {
-            frees.push({ start: cursor, end: it.start });
-          }
-          cursor = Math.max(cursor, it.end);
-        }
-        if (cursor < endOfDay) {
-          frees.push({ start: cursor, end: endOfDay });
-        }
-
-        freeTimesByDay[day] = frees;
-      }
-
-      results.push({
-        periodIndex: pMain.index,
-        type: pMain.type,
-        label: pMain.label,
-        freeTimesByDay,
-      });
-    }
-
-    return results;
-  } catch (error) {
-    console.error("Error in computeSharedFreeTimesPerPeriod:", error);
-    return [];
-  }
+  return out;
 };

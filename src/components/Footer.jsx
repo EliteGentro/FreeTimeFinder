@@ -5,7 +5,7 @@ export default function Footer() {
   const author = "Humberto Cisneros";
 
   return (
-    <footer className="mt-8 py-4 border-t border-gray-300 dark:border-gray-700 text-center text-sm text-gray-600 dark:text-gray-400">
+    <footer className="mt-8 py-4 border-t border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500 dark:text-slate-400">
       <p>
         © {currentYear} {author}. All rights reserved.
       </p>
@@ -14,7 +14,7 @@ export default function Footer() {
           href="https://github.com/EliteGentro"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-indigo-600 hover:underline dark:text-indigo-400 mx-2"
+          className="hover:underline text-slate-700 dark:text-slate-300 mx-2"
         >
           GitHub
         </a>
@@ -23,7 +23,7 @@ export default function Footer() {
           href="https://www.linkedin.com/in/humberto-gcs/"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-indigo-600 hover:underline dark:text-indigo-400 mx-2"
+          className="hover:underline text-slate-700 dark:text-slate-300 mx-2"
         >
           LinkedIn
         </a>
@@ -31,3 +31,4 @@ export default function Footer() {
     </footer>
   );
 }
+
