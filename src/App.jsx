@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from "react";
-import { Sun, Moon, X, Upload, Calendar as CalendarIcon, CalendarCheck, Download, FolderOpen } from "lucide-react";
+import { Sun, Moon, X, Upload, Calendar as CalendarIcon, CalendarCheck, Download, FolderOpen, HelpCircle, Sparkles } from "lucide-react";
 
 import { extractTextFromPDF } from "./utils/pdfUtils";
 import {
@@ -15,6 +15,8 @@ import { exportSnapshot, importSnapshot } from "./utils/snapshotUtils";
 import Calendar from "./components/Calendar";
 import FileUpload from "./components/FileUpload";
 import Footer from "./components/Footer";
+import Walkthrough from "./components/Walkthrough";
+import { getDemoData } from "./utils/mockData";
 
 const MAIN_ID = "main";
 
@@ -62,6 +64,7 @@ export default function App() {
   const [loadingFriends, setLoadingFriends] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [importError, setImportError] = useState(null);
+  const [showWalkthrough, setShowWalkthrough] = useState(false);
   const snapshotInputRef = useRef(null);
 
   const { periods, periodSlotData, owners } = useSchedulePeriods(
@@ -108,6 +111,23 @@ export default function App() {
     setFriendOwners((prev) => prev.filter((f) => f.id !== id));
   const clearMain = () => setMainOwner(null);
 
+  const isDemoActive = mainOwner?.id === "demo-main";
+
+  const loadDemo = () => {
+    const { mainOwner: m, friendOwners: fs } = getDemoData();
+    setMainOwner(m);
+    setFriendOwners(fs);
+    setImportError(null);
+    setShowWalkthrough(false);
+  };
+
+  const removeDemo = () => {
+    if (isDemoActive) setMainOwner(null);
+    setFriendOwners((prev) => prev.filter((f) => !f.id.startsWith("demo-")));
+  };
+
+  const toggleDemo = () => (isDemoActive ? removeDemo() : loadDemo());
+
   const handleExportSnapshot = () => {
     exportSnapshot(mainOwner, friendOwners);
   };
@@ -140,9 +160,9 @@ export default function App() {
   return (
     <div className={darkMode ? "dark" : ""}>
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
-        <div className="max-w-5xl mx-auto px-6 py-10">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
           {/* Top bar */}
-          <div className="flex justify-between items-center mb-8">
+          <div className="flex flex-wrap justify-between items-center gap-3 mb-8">
             <div className="flex items-center gap-2">
               <CalendarIcon
                 size={22}
@@ -152,7 +172,7 @@ export default function App() {
                 Free Time Finder
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {/* Hidden file input for snapshot import */}
               <input
                 ref={snapshotInputRef}
@@ -168,27 +188,9 @@ export default function App() {
                 title="Import a previously saved snapshot"
               >
                 <FolderOpen size={14} />
-                Import
+                <span className="hidden sm:inline">Import</span>
               </button>
 
-              <button
-                onClick={handleExportSnapshot}
-                disabled={!mainOwner && friendOwners.length === 0}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Export current schedules as a reusable snapshot"
-              >
-                <Download size={14} />
-                Export
-              </button>
-
-              <a
-                href="https://youtu.be/Ck3KbiHxB7w"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-3 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-              >
-                Tutorial
-              </a>
               <button
                 onClick={() => setDarkMode((p) => !p)}
                 className="p-2 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
@@ -201,7 +203,7 @@ export default function App() {
 
           {/* Intro */}
           <header className="mb-8">
-            <h1 className="text-3xl font-semibold tracking-tight mb-2">
+            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight mb-2">
               Find when everyone is free
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 max-w-2xl">
@@ -209,6 +211,26 @@ export default function App() {
               PDF). The app overlaps every calendar and shows shared free
               blocks, with a heat map for partial matches.
             </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                onClick={() => setShowWalkthrough(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
+                <HelpCircle size={14} />
+                How it works
+              </button>
+              <button
+                onClick={toggleDemo}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  isDemoActive
+                    ? "border border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-red-50 hover:border-red-300 hover:text-red-600 dark:hover:bg-red-950 dark:hover:border-red-700 dark:hover:text-red-400"
+                    : "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 hover:opacity-90"
+                }`}
+              >
+                {isDemoActive ? <X size={14} /> : <Sparkles size={14} />}
+                {isDemoActive ? "Remove demo" : "Try a demo"}
+              </button>
+            </div>
           </header>
 
           {/* Import error banner */}
@@ -285,13 +307,21 @@ export default function App() {
               mainOwnerId={mainOwner?.id || null}
             />
           ) : (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-10 text-center text-sm text-slate-500 dark:text-slate-400">
-              Upload at least one schedule to see results.
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-8 sm:p-10 text-center">
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Upload at least one schedule to see results.
+              </p>
             </div>
           )}
         </div>
         <Footer />
       </div>
+
+      <Walkthrough
+        open={showWalkthrough}
+        onClose={() => setShowWalkthrough(false)}
+        onLoadDemo={loadDemo}
+      />
     </div>
   );
 }
